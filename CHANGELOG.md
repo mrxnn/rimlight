@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.9, unreleased
+
+- Listing a provider's models needs no key. `ImageModels.list` drops its key
+  parameter and `rimlight image --models` no longer asks the app for one, since
+  OpenRouter's and OpenAI's lists are public. A key is now read only to render
+  or to check it.
+
 ## 0.8.8, unreleased
 
 - A 403 from an image API no longer says the key was rejected. The key works

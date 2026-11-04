@@ -486,6 +486,15 @@ final class StubAPI: URLProtocol {
         } throws: { "\($0)" == "OpenAI refused this request: Missing scope: model.read" }
     }
 
+    /// A menu must not touch the key: the app's Keychain can ask for a password just to read it.
+    @Test func listingModelsSendsNoKey() async throws {
+        let session = StubAPI.session([], models: Self.models("m", Self.gptImage2))
+        let options = try await ImageModels.list(.openrouter, session: session)
+        #expect(options.map(\.id) == ["m"])
+        #expect(StubAPI.seen.count >= 2)
+        #expect(StubAPI.seen.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == nil })
+    }
+
     /// No credit is a limit: recorded for the app's banner, and no retry spent on it.
     @Test func anEmptyAccountIsALimit() throws {
         try withTempDir { dir in

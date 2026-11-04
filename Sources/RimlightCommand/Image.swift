@@ -120,17 +120,12 @@ enum Image {
             Output.out(json ? "[]" : "NOTE: Codex picks its own image model")
             return 0
         }
-        let key: String
-        switch KeySource.lookup(provider, onWait: { Output.err(waiting(provider)) }) {
-        case .found(let found, _): key = found
-        case .missing(let why): throw ImageFailure.unavailable(why)
-        }
         let baseURL = provider == .custom ? settings.baseURL.flatMap(URL.init(string:)) : nil
         let result = Mutex<Result<[ImageModelOption], any Error>?>(nil)
         let done = DispatchSemaphore(value: 0)
         Task {
             let outcome: Result<[ImageModelOption], any Error>
-            do { outcome = .success(try await ImageModels.list(provider, key: key, baseURL: baseURL)) } catch {
+            do { outcome = .success(try await ImageModels.list(provider, baseURL: baseURL)) } catch {
                 outcome = .failure(error)
             }
             result.withLock { $0 = outcome }

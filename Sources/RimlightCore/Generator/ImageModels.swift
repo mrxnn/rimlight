@@ -64,26 +64,27 @@ public enum ImageModels {
 
     /// The models `provider` offers that can render Rimlight's requests. For OpenRouter that
     /// is every image model that takes images as input, since refinements, fixes and layered
-    /// builds all send reference images; tested ones first, then by name.
+    /// builds all send reference images; tested ones first, then by name. Takes no key: both
+    /// lists are public, so showing a menu never reads a key from the Keychain or sends it.
     public static func list(
-        _ provider: ImageProvider, key: String, baseURL: URL? = nil, session: URLSession = .shared
+        _ provider: ImageProvider, baseURL: URL? = nil, session: URLSession = .shared
     ) async throws -> [ImageModelOption] {
         switch provider {
         case .codex, .custom:
             return []
         case .openai:
-            return await priced(openAI, root: publicPrices, key: nil, prefix: "openai/", session: session)
+            return await priced(openAI, root: publicPrices, prefix: "openai/", session: session)
         case .openrouter:
             let root = try root(provider, baseURL)
-            let data = try await get(root.appending(path: "images/models"), key: key, provider: provider, session: session)
-            return await priced(openRouterModels(data), root: root.appending(path: "images/models"), key: key, prefix: "", session: session)
+            let data = try await get(root.appending(path: "images/models"), key: nil, provider: provider, session: session)
+            return await priced(openRouterModels(data), root: root.appending(path: "images/models"), prefix: "", session: session)
         }
     }
 
     /// `options` with each one's price, looked up side by side, a few at a time. A price that
     /// can't be read is left out rather than failing the list.
     static func priced(
-        _ options: [ImageModelOption], root: URL, key: String?, prefix: String, session: URLSession
+        _ options: [ImageModelOption], root: URL, prefix: String, session: URLSession
     ) async -> [ImageModelOption] {
         await withTaskGroup(of: (Int, ImagePrice?).self) { group in
             var priced = options
@@ -93,8 +94,7 @@ public enum ImageModels {
                 let index = next
                 let url = root.appending(path: prefix + options[index].id).appending(path: "endpoints")
                 group.addTask {
-                    var request = URLRequest(url: url, timeoutInterval: 15)
-                    if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+                    let request = URLRequest(url: url, timeoutInterval: 15)
                     guard let (data, response) = try? await session.data(for: request),
                         ((response as? HTTPURLResponse)?.statusCode ?? 0) / 100 == 2
                     else { return (index, nil) }
@@ -147,14 +147,14 @@ public enum ImageModels {
         return root
     }
 
-    private static func get(_ url: URL, key: String, provider: ImageProvider, session: URLSession) async throws -> Data {
+    private static func get(_ url: URL, key: String?, provider: ImageProvider, session: URLSession) async throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: 20)
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200..<300: return data
-        case 401: throw ImageFailure.unavailable("\(provider.displayName) rejected the key")
+        case 401 where key != nil: throw ImageFailure.unavailable("\(provider.displayName) rejected the key")
         case 403:
             // A good key without this permission; the key may still render.
             let reason = HTTPImageGen.message(in: data) ?? "no reason given"
