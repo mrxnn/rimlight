@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Builds a universal `rimlight`, signs and notarizes it, and packs it with its resource bundle
+# as dist/rimlight-<version>-macos.tar.gz for a GitHub release and the Homebrew formula.
+#
+#   scripts/release <version> [--publish]
+#
+# RIMLIGHT_SIGN_IDENTITY names the Developer ID Application identity to sign with.
+# RIMLIGHT_NOTARY_PROFILE names the notarytool keychain profile, "rimlight" by default
+# (make it once with `xcrun notarytool store-credentials rimlight`).
+# Without --publish it prints the `gh release create` line instead of running it.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+usage() {
+    echo "usage: scripts/release <version> [--publish]" >&2
+    exit 64
+}
+
+version=""
+publish=false
+for arg in "$@"; do
+    case "$arg" in
+        --publish) publish=true ;;
+        -*) usage ;;
+        *) if [[ -z $version ]]; then version=$arg; else usage; fi ;;
+    esac
+done
+[[ -n $version ]] || usage
+
+fail() {
+    echo "release: $*" >&2
+    exit 1
+}
+
+# The release is built from a commit, so nothing may be uncommitted, untracked included.
+[[ -z $(git status --porcelain -- .) ]] || fail "the working tree has changes; commit or stash them first"
+
+# The version the binary prints must be the one being released.
+version_file=Sources/RimlightCore/RimlightCore.swift
+source_version=$(sed -n 's/.*static let version = "\(.*\)".*/\1/p' "$version_file")
+[[ $source_version == "$version" ]] ||
+    fail "Rimlight.version in $version_file is \"$source_version\", not \"$version\""
+
+[[ -n ${RIMLIGHT_SIGN_IDENTITY:-} ]] ||
+    fail "set RIMLIGHT_SIGN_IDENTITY to a Developer ID Application identity (security find-identity -v -p codesigning lists them)"
+profile=${RIMLIGHT_NOTARY_PROFILE:-rimlight}
+if $publish; then
+    command -v gh >/dev/null || fail "--publish needs the GitHub CLI, gh"
+fi
+
+# One binary for Apple silicon and Intel, built from scratch: an incremental build keeps
+# resources that were since removed from the package, and they would ship.
+scratch=.build/release-scratch
+rm -rf "$scratch"
+build_flags=(-c release --arch arm64 --arch x86_64 --scratch-path "$scratch")
+swift build "${build_flags[@]}"
+bin=$(swift build "${build_flags[@]}" --show-bin-path)
+lipo "$bin/rimlight" -verify_arch arm64 x86_64 || fail "$bin/rimlight is not universal"
+
+# The binary finds its resources in the bundle beside it.
+name=rimlight-$version
+stage=dist/$name
+zip=dist/$name.zip
+tarball=dist/$name-macos.tar.gz
+rm -rf "$stage" "$zip" "$tarball"
+mkdir -p "$stage"
+ditto "$bin/rimlight" "$stage/rimlight"
+ditto "$bin/RimlightCore_RimlightCore.bundle" "$stage/RimlightCore_RimlightCore.bundle"
+
+codesign --force --sign "$RIMLIGHT_SIGN_IDENTITY" --options runtime --timestamp "$stage/rimlight"
+codesign --verify --strict --verbose=2 "$stage/rimlight"
+"$stage/rimlight" version
+
+# notarytool takes a zip. A bare binary cannot be stapled, so Gatekeeper checks the
+# ticket online the first time it runs.
+ditto -c -k --keepParent "$stage" "$zip"
+result=$(xcrun notarytool submit "$zip" --keychain-profile "$profile" --wait --output-format json) || true
+status=$(plutil -extract status raw -o - - <<<"$result" 2>/dev/null) || status=unknown
+if [[ $status != Accepted ]]; then
+    id=$(plutil -extract id raw -o - - <<<"$result" 2>/dev/null) || id="<submission id>"
+    fail "notarization ended as $status; see xcrun notarytool log $id --keychain-profile $profile"
+fi
+rm "$zip"
+
+# COPYFILE_DISABLE keeps macOS metadata files out of the tarball.
+COPYFILE_DISABLE=1 tar -czf "$tarball" -C dist "$name"
+sha=$(shasum -a 256 "$tarball" | cut -d ' ' -f 1)
+
+# gh creates the tag at HEAD, so HEAD must be pushed first.
+release=(gh release create "v$version" "$tarball" --target "$(git rev-parse HEAD)"
+    --title "rimlight $version" --generate-notes)
+
+echo
+echo "$PWD/$tarball"
+echo "version $version"
+echo "sha256  $sha"
+echo "Fill VERSION and SHA256 in packaging/rimlight.rb with these and copy it to mrxnn/homebrew-tap."
+echo
+if $publish; then
+    "${release[@]}"
+else
+    echo "To publish, run this or pass --publish:"
+    printf '%q ' "${release[@]}"
+    echo
+fi

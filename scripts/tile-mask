@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Renders Apple's app icon shape with Icon Composer's ictool and writes its alpha as the
+# 1024 px grey mask RimlightCore fits every render to (white inside the tile, black outside).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+ictool="$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool"
+out=Sources/RimlightCore/Resources/TileMask.png
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# A .icon with one flat fill and no layers: its render is the bare system shape.
+mkdir -p "$work/Flat.icon/Assets"
+cat > "$work/Flat.icon/icon.json" <<'JSON'
+{
+  "fill" : { "solid" : "srgb:1.00000,0.00000,0.00000,1.00000" },
+  "groups" : [],
+  "supported-platforms" : { "squares" : "shared" }
+}
+JSON
+"$ictool" "$work/Flat.icon" --export-image --output-file "$work/shape.png" \
+    --platform macOS --rendition Default --width 1024 --height 1024 --scale 1 >/dev/null
+
+cat > "$work/alpha.swift" <<'SWIFT'
+import CoreGraphics
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+let args = CommandLine.arguments
+let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[1]) as CFURL, nil)!
+let image = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+let (w, h) = (image.width, image.height)
+let alpha = CGContext(
+    data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+    bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue)!
+alpha.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+let grey = CGContext(
+    data: alpha.data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+    bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+let destination = CGImageDestinationCreateWithURL(
+    URL(fileURLWithPath: args[2]) as CFURL, UTType.png.identifier as CFString, 1, nil)!
+CGImageDestinationAddImage(destination, grey.makeImage()!, nil)
+precondition(CGImageDestinationFinalize(destination))
+SWIFT
+swift "$work/alpha.swift" "$work/shape.png" "$out"
+echo "$PWD/$out"

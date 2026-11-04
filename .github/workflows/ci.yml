@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # macos-26 is GitHub's arm64 macOS 26 image. Its README (read 2026-10-12) lists Xcode
+    # 26.0.1 to 26.6 as /Applications/Xcode_26*.app, 26.6 the default. Not yet run; confirm
+    # on the first push.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Release builds only. The pattern skips betas and release candidates.
+      - name: Select the newest Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | grep -E '/Xcode_26(\.[0-9]+)*\.app$' | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          echo "Using $xcode"
+
+      - run: swift --version
+      - run: swift build
+      - run: swift test
+
